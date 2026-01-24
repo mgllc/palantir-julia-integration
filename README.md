@@ -1,7 +1,17 @@
-# palantir-julia-integration
-Integrating Julia into the Palantir Foundry Platform. Experimental toolkit to integrate Julia workflows into Palantir Foundry via Python bridges, REST endpoints, or containerized apps.
-## 🚀 Running the Julia API Server
+# Palantir Julia Integration
 
-```bash
-docker build -t julia-api ./docker
-docker run -p 8080:8080 julia-api
+A brief description of what the Palantir Julia Integration does and its purpose.
+
+## Setup Guide
+
+1. **Clone the Repository**: `git clone https://github.com/mgllc/palantir-julia-integration.git`
+2. **Install Dependencies**: (Instructions for installing dependencies)
+3. **Run the Application**: (Instructions for running the application)
+
+## Usage
+
+Detailed usage instructions.
+
+## License
+
+This project is licensed under the MIT License.
