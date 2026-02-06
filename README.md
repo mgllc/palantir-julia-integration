@@ -26,6 +26,9 @@
 ## API Usage
 This repository includes a simple HTTP API example in `src/api.jl`.
 
+## GovDOSS Alignment
+This example follows GovDOSS-aligned practices by enforcing content-type validation, applying safe response headers, and emitting request identifiers for auditability. Responses include `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and `X-Request-Id` to support governance, observability, and secure handling of data in transit.
+
 ### Health Check
 ```bash
 curl http://localhost:8080/health
