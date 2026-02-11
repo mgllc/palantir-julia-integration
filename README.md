@@ -23,6 +23,31 @@
 * **Real-time Data Integration:** Stream data from IoT devices directly into Palantir.
 * **Batch Processing:** Schedule jobs to run at specific intervals to analyze large datasets.
 
+## API Usage
+This repository includes a simple HTTP API example in `src/api.jl`.
+
+### Health Check
+```bash
+curl http://localhost:8080/health
+```
+
+### Add Two Numbers
+```bash
+curl -X POST http://localhost:8080/add \
+  -H "Content-Type: application/json" \
+  -d '{"x": 2, "y": 3}'
+```
+
+### AI Echo (Stub)
+```bash
+curl -X POST http://localhost:8080/ai/echo \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Hello, world"}'
+```
+
+### Error Handling
+Invalid JSON returns a `400` status, missing or non-numeric fields return a `422`, oversized payloads return a `413`, non-JSON content types return a `415`, missing routes return a `404`, and unsupported methods return a `405`.
+
 ## Troubleshooting Tips
 1. **Common Errors:** If you encounter errors, check your Palantir connection settings.
 2. **Debugging:** Enable logging to get detailed output for troubleshooting.
