@@ -1,57 +1,97 @@
 # Palantir Julia Integration
 
-## Example Integration Workflows
+A minimal Julia HTTP service that demonstrates how to expose small analytics-style endpoints (`/add`, `/ai/echo`) for downstream systems.
 
-### Workflow 1: Basic Integration
-1. **Set up your environment:** Install Julia and Palantir software.
-2. **Initialize a project:** Create a new Julia project using `Pkg`.
-3. **Add dependencies:** In your project, add the necessary packages for Palantir integration.
-4. **Write the integration code:** Use the following sample code:
-   ```julia
-   using Palantir
-   # Your integration code here
-   ```
-5. **Run the project:** Use Julia's package manager to run your project.
+## Quick Start
 
-### Workflow 2: Advanced Data Processing
-1. **Install additional packages:** Consider installing packages for data processing, like `DataFrames.jl`.
-2. **Load and process data:** Read data from your data sources, manipulate and process it.
-3. **Integrate with Palantir:** Use the integration features to send data to Palantir.
-4. **Analyze results:** Access Palantir's analytical tools to visualize and interpret your data.
+```bash
+docker build -t julia-api ./docker
+docker run --rm -p 8080:8080 julia-api
+```
 
-## Advanced Use Cases
-* **Real-time Data Integration:** Stream data from IoT devices directly into Palantir.
-* **Batch Processing:** Schedule jobs to run at specific intervals to analyze large datasets.
+Then test the endpoints:
 
-## API Usage
-This repository includes a simple HTTP API example in `src/api.jl`.
-
-### Health Check
 ```bash
 curl http://localhost:8080/health
+curl -X POST http://localhost:8080/add -H "Content-Type: application/json" -d '{"x":2,"y":3}'
+curl -X POST http://localhost:8080/ai/echo -H "Content-Type: application/json" -d '{"prompt":"hello"}'
 ```
 
-### Add Two Numbers
-```bash
-curl -X POST http://localhost:8080/add \
-  -H "Content-Type: application/json" \
-  -d '{"x": 2, "y": 3}'
+## Repository Structure
+
+```text
+palantir-julia-integration/
+├── src/
+│   └── api.jl                 # HTTP routes, request validation, JSON responses
+├── docker/
+│   └── Dockerfile             # Container image build and runtime command
+├── notebooks/
+│   └── example_bridge.ipynb   # Tiny Python request example
+└── Project.toml               # Julia package dependencies
 ```
 
-### AI Echo (Stub)
-```bash
-curl -X POST http://localhost:8080/ai/echo \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Hello, world"}'
+## How the API Works (Logical Flow)
+
+1. `HTTP.serve` starts a server on port `8080` and forwards every request to `handle_request`.
+2. `handle_request` routes by method + path:
+   - `GET /health`
+   - `POST /add`
+   - `POST /ai/echo`
+   - otherwise `404` (`GET`/`POST`) or `405` (other methods)
+3. POST handlers call `parse_json_body` to enforce:
+   - `Content-Type: application/json` (`415` otherwise)
+   - payload size limit (`413` for oversized bodies)
+   - valid JSON object payload (`400`/`422` errors)
+4. Endpoint-specific validation runs:
+   - `/add`: numeric `x` and `y`, returns `{"result": x + y}`
+   - `/ai/echo`: string `prompt`, returns a stubbed echo response
+
+This structure centralizes shared validation and keeps each endpoint focused on business logic.
+
+## API Endpoints
+
+### `GET /health`
+Returns a simple status payload.
+
+### `POST /add`
+Request:
+
+```json
+{"x": 2, "y": 3}
 ```
 
-### Error Handling
-Invalid JSON returns a `400` status, missing or non-numeric fields return a `422`, oversized payloads return a `413`, non-JSON content types return a `415`, missing routes return a `404`, and unsupported methods return a `405`.
+Response:
 
-## Troubleshooting Tips
-1. **Common Errors:** If you encounter errors, check your Palantir connection settings.
-2. **Debugging:** Enable logging to get detailed output for troubleshooting.
-3. **Community Support:** Engage with the Julia and Palantir communities for additional help.
+```json
+{"result": 5}
+```
 
-## Conclusion
-Integrating Julia with Palantir can enhance your data analysis capabilities. Refer to the official documentation of both tools for deeper insights.
+### `POST /ai/echo`
+Request:
+
+```json
+{"prompt": "Hello"}
+```
+
+Response:
+
+```json
+{"response": "Echo: Hello", "note": "AI echo stub; replace with model integration."}
+```
+
+## Error Behavior
+
+- `400` invalid JSON body
+- `404` unknown `GET`/`POST` route
+- `405` unsupported method
+- `413` payload too large
+- `415` non-JSON content type
+- `422` structurally valid request with invalid/missing fields
+
+## What to Learn Next
+
+1. **HTTP.jl basics**: routing strategies and middleware patterns.
+2. **Input validation patterns**: expand current checks into reusable schema-style validation.
+3. **Service hardening**: request logging, metrics, auth, and rate-limits.
+4. **Foundry integration path**: call this API from Python-based orchestration or containerized jobs.
+5. **Testing**: add endpoint tests for happy-path and error-path behavior.
