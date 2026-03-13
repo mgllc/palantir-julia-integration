@@ -1,15 +1,15 @@
 FROM julia:1.10
 
-# Install required packages
-RUN julia -e 'using Pkg; Pkg.add(["HTTP", "JSON"])'
-
-# Set working directory
 WORKDIR /app
 
-# Copy source
-COPY src/ ./src/
+# Copy project manifest and resolve dependencies before copying source so that
+# the package layer is cached independently of source changes.
 COPY Project.toml .
-COPY Manifest.toml .
+RUN julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
-# Run server
-CMD ["julia", "src/api.jl"]
+# Copy source after dependencies are resolved.
+COPY src/ ./src/
+
+# API_KEY can be injected at runtime; leave unset for unauthenticated (dev) mode.
+# Example: docker run -e API_KEY=mysecret ...
+CMD ["julia", "--project=.", "src/api.jl"]
