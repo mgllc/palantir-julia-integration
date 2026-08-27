@@ -4,9 +4,9 @@ using JSON
 using Dates
 using UUIDs
 
-# ─── GovDOSS Configuration ────────────────────────────────────────────────────
+# ─── Configuration ────────────────────────────────────────────────────────────
 # All tuneable limits and secrets are read from environment variables so that
-# nothing sensitive is baked into source code (GovDOSS: no hard-coded secrets).
+# nothing sensitive is baked into source code (principle: no hard-coded secrets).
 
 const MAX_BODY_BYTES    = 1_024 * 10   # 10 KB payload cap
 const RATE_LIMIT_COUNT  = 60           # max requests per window per client IP
@@ -22,7 +22,7 @@ const _rate_lock  = ReentrantLock()
 
 # ─── Structured audit logger ──────────────────────────────────────────────────
 # Emits one JSON line per event so that log aggregators (Splunk, Elasticsearch,
-# etc.) can ingest and query without parsing free-form text (GovDOSS: auditable
+# etc.) can ingest and query without parsing free-form text (principle: auditable
 # machine-readable logs).
 #
 # Parameters:
@@ -49,9 +49,9 @@ function audit_log(; correlation_id::String, phase::String,
     )))
 end
 
-# ─── Response builder with GovDOSS security headers ──────────────────────────
+# ─── Response builder with hardened security headers ─────────────────────────
 # All responses include defensive HTTP headers regardless of content to harden
-# the service at the transport layer (GovDOSS: security by default).
+# the service at the transport layer (principle: security by default).
 function json_response(status::Integer, payload::Dict; correlation_id::String="")
     headers = [
         "Content-Type"              => "application/json",
@@ -105,7 +105,7 @@ end
 # ─── Phase 1: OBSERVE ─────────────────────────────────────────────────────────
 # Collect raw signal from the inbound request and assign a unique correlation ID
 # that threads through every subsequent log entry for full traceability
-# (GovDOSS: accountability and traceability).
+# (principle: accountability and traceability).
 #
 # Returns a tuple (correlation_id, client_ip, method, path).
 function observe_request(req)
@@ -129,7 +129,7 @@ end
 
 # ─── Phase 2: ORIENT ──────────────────────────────────────────────────────────
 # Analyse the request context: authenticate the caller and enforce rate limits
-# before any business logic executes (GovDOSS: zero-trust, deny-by-default).
+# before any business logic executes (principle: zero-trust, deny-by-default).
 #
 # Returns `nothing` on success, or an HTTP.Response to short-circuit the
 # pipeline on authentication failure (401) or rate-limit violation (429).
@@ -150,7 +150,7 @@ function orient_request(req, correlation_id::String, client_ip::String)
         end
     end
 
-    # Per-IP rate limiting — sliding window (GovDOSS: availability protection).
+    # Per-IP rate limiting — sliding window (principle: availability protection).
     now_ts  = time()
     allowed = lock(_rate_lock) do
         timestamps = get!(_rate_store, client_ip, Float64[])
@@ -209,7 +209,7 @@ function handle_health(correlation_id::String)
 end
 
 # Expose lightweight telemetry so operators can observe service health without
-# needing external instrumentation (GovDOSS: operational visibility).
+# needing external instrumentation (principle: operational visibility).
 function handle_metrics(correlation_id::String)
     clients_tracked = lock(_rate_lock) do
         length(_rate_store)

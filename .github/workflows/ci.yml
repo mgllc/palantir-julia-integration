@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  docker-build:
+    name: Build container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t julia-api ./docker
+
+      - name: Smoke test — container starts and responds to /health
+        run: |
+          docker run -d --rm -p 8080:8080 --name julia-api julia-api
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health; then exit 0; fi
+            sleep 1
+          done
+          echo "Service did not become healthy in time"
+          docker logs julia-api
+          exit 1
