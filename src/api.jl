@@ -12,7 +12,8 @@ const RATE_LIMIT_COUNT  = 60           # max requests per window per client IP
 const RATE_LIMIT_WINDOW = 60           # sliding window length in seconds
 # When API_KEY is set, every request must carry a matching X-API-Key header.
 # Leave unset (or empty) to run without authentication (development only).
-const REQUIRED_API_KEY  = get(ENV, "API_KEY", "")
+# Stored in a Ref so that tests can override the value without restarting.
+const REQUIRED_API_KEY  = Ref{String}(get(ENV, "API_KEY", ""))
 
 # ─── In-memory rate-limit store ───────────────────────────────────────────────
 # Maps client IP → sorted list of request timestamps within the current window.
@@ -33,7 +34,7 @@ const _rate_lock  = ReentrantLock()
 #   client_ip      – Caller IP extracted from X-Forwarded-For, or "unknown".
 #   detail         – Human-readable event description for the log record.
 function audit_log(; correlation_id::AbstractString, phase::AbstractString,
-                     method::AbstractString="", path::AbstractString="", status::Int=0,
+                     method::AbstractString="", path::AbstractString="", status::Integer=0,
                      client_ip::AbstractString="", detail::AbstractString="")
     # `time()` is Unix epoch seconds (always UTC); unix2datetime converts it to a
     # UTC DateTime without needing the separate TimeZones.jl package.
@@ -94,7 +95,7 @@ function parse_json_body(req; correlation_id::AbstractString="")
                                        correlation_id=correlation_id))
     end
 
-    if !(body isa Dict)
+    if !(body isa AbstractDict)
         return (nothing, json_response(422, Dict("error" => "Payload must be a JSON object");
                                        correlation_id=correlation_id))
     end
@@ -115,12 +116,12 @@ end
 # Returns a tuple (correlation_id, client_ip, method, path).
 function observe_request(req)
     correlation_id = string(UUIDs.uuid4())
-    client_ip = something(HTTP.header(req, "X-Forwarded-For", ""), "")
+    client_ip = String(something(HTTP.header(req, "X-Forwarded-For", ""), ""))
     if isempty(client_ip)
         client_ip = "unknown"
     end
     method = req.method
-    path   = HTTP.URI(req.target).path
+    path   = String(HTTP.URI(req.target).path)
     audit_log(
         correlation_id = correlation_id,
         phase          = "OBSERVE",
@@ -140,9 +141,9 @@ end
 # pipeline on authentication failure (401) or rate-limit violation (429).
 function orient_request(req, correlation_id::AbstractString, client_ip::AbstractString)
     # Authentication — enforced when API_KEY environment variable is set.
-    if !isempty(REQUIRED_API_KEY)
+    if !isempty(REQUIRED_API_KEY[])
         api_key = something(HTTP.header(req, "X-API-Key", ""), "")
-        if api_key != REQUIRED_API_KEY
+        if api_key != REQUIRED_API_KEY[]
             audit_log(
                 correlation_id = correlation_id,
                 phase          = "ORIENT",
@@ -317,4 +318,9 @@ function handle_request_inner(req)
     return response
 end
 
-HTTP.serve(handle_request, "0.0.0.0", 8080)
+# Guarded so that `include`-ing this file (e.g. from the test suite) doesn't
+# also bind port 8080 — only running it directly (`julia src/api.jl`) starts
+# the server.
+if abspath(PROGRAM_FILE) == @__FILE__
+    HTTP.serve(handle_request, "0.0.0.0", 8080)
+end
