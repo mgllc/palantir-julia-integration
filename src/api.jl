@@ -48,6 +48,10 @@ function audit_log(; correlation_id::String, phase::String,
         "client_ip"      => client_ip,
         "detail"         => detail,
     )))
+    # stdout is fully buffered (not line-buffered) once redirected to a pipe,
+    # as it always is under Docker — without this, audit entries can sit
+    # unflushed indefinitely on a low-traffic server.
+    flush(stdout)
 end
 
 # ─── Response builder with hardened security headers ─────────────────────────
@@ -259,7 +263,20 @@ function handle_ai_echo(req, correlation_id::String)
 end
 
 # ─── Top-level handler: wires all OODA phases together ────────────────────────
+# Wrapped so an unhandled exception is logged with its full backtrace instead
+# of surfacing as an opaque 500 with no trace of what happened.
 function handle_request(req)
+    try
+        return handle_request_inner(req)
+    catch e
+        Base.showerror(stderr, e, catch_backtrace())
+        println(stderr)
+        flush(stderr)
+        return HTTP.Response(500, "Internal Server Error")
+    end
+end
+
+function handle_request_inner(req)
     # Phase 1 — Observe
     correlation_id, client_ip, method, path = observe_request(req)
 
