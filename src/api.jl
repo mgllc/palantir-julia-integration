@@ -32,9 +32,9 @@ const _rate_lock  = ReentrantLock()
 #   status         – HTTP status code; 0 while the response has not yet been sent.
 #   client_ip      – Caller IP extracted from X-Forwarded-For, or "unknown".
 #   detail         – Human-readable event description for the log record.
-function audit_log(; correlation_id::String, phase::String,
-                     method::String="", path::String="", status::Int=0,
-                     client_ip::String="", detail::String="")
+function audit_log(; correlation_id::AbstractString, phase::AbstractString,
+                     method::AbstractString="", path::AbstractString="", status::Int=0,
+                     client_ip::AbstractString="", detail::AbstractString="")
     # `time()` is Unix epoch seconds (always UTC); unix2datetime converts it to a
     # UTC DateTime without needing the separate TimeZones.jl package.
     ts = Dates.format(Dates.unix2datetime(time()), "yyyy-mm-ddTHH:MM:SS") * "Z"
@@ -57,7 +57,7 @@ end
 # ─── Response builder with hardened security headers ─────────────────────────
 # All responses include defensive HTTP headers regardless of content to harden
 # the service at the transport layer (principle: security by default).
-function json_response(status::Integer, payload::Dict; correlation_id::String="")
+function json_response(status::Integer, payload::Dict; correlation_id::AbstractString="")
     headers = [
         "Content-Type"              => "application/json",
         "X-Content-Type-Options"    => "nosniff",
@@ -75,7 +75,7 @@ function is_json_content_type(value)
     return !isempty(value) && startswith(lowercase(value), "application/json")
 end
 
-function parse_json_body(req; correlation_id::String="")
+function parse_json_body(req; correlation_id::AbstractString="")
     content_type = HTTP.header(req, "Content-Type")
     if content_type === nothing || !is_json_content_type(content_type)
         return (nothing, json_response(415, Dict("error" => "Content-Type must be application/json");
@@ -138,7 +138,7 @@ end
 #
 # Returns `nothing` on success, or an HTTP.Response to short-circuit the
 # pipeline on authentication failure (401) or rate-limit violation (429).
-function orient_request(req, correlation_id::String, client_ip::String)
+function orient_request(req, correlation_id::AbstractString, client_ip::AbstractString)
     # Authentication — enforced when API_KEY environment variable is set.
     if !isempty(REQUIRED_API_KEY)
         api_key = something(HTTP.header(req, "X-API-Key", ""), "")
@@ -188,7 +188,7 @@ end
 #
 # Returns a Symbol identifying the handler:
 #   :health, :metrics, :add, :ai_echo, :not_found, or :method_not_allowed.
-function decide_handler(method::String, path::String)
+function decide_handler(method::AbstractString, path::AbstractString)
     if method == "GET" && path == "/health"
         return :health
     elseif method == "GET" && path == "/metrics"
@@ -208,14 +208,14 @@ end
 # Execute the decided action.  Each handler is responsible only for its own
 # business logic; cross-cutting concerns (headers, logging) are handled above.
 
-function handle_health(correlation_id::String)
+function handle_health(correlation_id::AbstractString)
     return json_response(200, Dict("status" => "Julia API is live");
                          correlation_id=correlation_id)
 end
 
 # Expose lightweight telemetry so operators can observe service health without
 # needing external instrumentation (principle: operational visibility).
-function handle_metrics(correlation_id::String)
+function handle_metrics(correlation_id::AbstractString)
     clients_tracked = lock(_rate_lock) do
         length(_rate_store)
     end
@@ -226,7 +226,7 @@ function handle_metrics(correlation_id::String)
     ); correlation_id=correlation_id)
 end
 
-function handle_add(req, correlation_id::String)
+function handle_add(req, correlation_id::AbstractString)
     body, err = parse_json_body(req; correlation_id=correlation_id)
     if err !== nothing
         return err
@@ -246,7 +246,7 @@ function handle_add(req, correlation_id::String)
     return json_response(200, Dict("result" => result); correlation_id=correlation_id)
 end
 
-function handle_ai_echo(req, correlation_id::String)
+function handle_ai_echo(req, correlation_id::AbstractString)
     body, err = parse_json_body(req; correlation_id=correlation_id)
     if err !== nothing
         return err
