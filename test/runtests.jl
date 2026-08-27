@@ -33,14 +33,16 @@ end
 
 # ──────────────────────────────────────────────────────────────────────────────
 @testset "json_response" begin
+    # HTTP.jl canonicalizes header casing (e.g. "X-Correlation-Id"), so look
+    # headers up with the case-insensitive HTTP.header() accessor rather than
+    # an exact-string Dict/list match.
     resp = json_response(200, Dict("status" => "ok"); correlation_id="test-id")
     @test resp.status == 200
-    headers_dict = Dict(String(k) => String(v) for (k, v) in resp.headers)
-    @test headers_dict["Content-Type"]           == "application/json"
-    @test headers_dict["X-Content-Type-Options"] == "nosniff"
-    @test headers_dict["X-Frame-Options"]        == "DENY"
-    @test headers_dict["Cache-Control"]          == "no-store"
-    @test headers_dict["X-Correlation-ID"]       == "test-id"
+    @test HTTP.header(resp, "Content-Type")           == "application/json"
+    @test HTTP.header(resp, "X-Content-Type-Options") == "nosniff"
+    @test HTTP.header(resp, "X-Frame-Options")        == "DENY"
+    @test HTTP.header(resp, "Cache-Control")          == "no-store"
+    @test HTTP.header(resp, "X-Correlation-ID")       == "test-id"
     body = JSON.parse(String(resp.body))
     @test body["status"] == "ok"
 end
@@ -48,8 +50,7 @@ end
 @testset "json_response without correlation_id" begin
     resp = json_response(404, Dict("error" => "Not found"))
     @test resp.status == 404
-    header_names = [String(k) for (k, _) in resp.headers]
-    @test !("X-Correlation-ID" in header_names)
+    @test HTTP.header(resp, "X-Correlation-ID", "") == ""
 end
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -213,8 +214,7 @@ end
         req  = make_get("/health"; forwarded_for="10.0.0.1")
         resp = handle_request(req)
         @test resp.status == 200
-        headers_dict = Dict(String(k) => String(v) for (k, v) in resp.headers)
-        @test haskey(headers_dict, "X-Correlation-ID")
+        @test HTTP.header(resp, "X-Correlation-ID", "") != ""
         body = JSON.parse(String(resp.body))
         @test body["status"] == "Julia API is live"
     finally
