@@ -35,7 +35,9 @@ const _rate_lock  = ReentrantLock()
 function audit_log(; correlation_id::String, phase::String,
                      method::String="", path::String="", status::Int=0,
                      client_ip::String="", detail::String="")
-    ts = Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SS") * "Z"
+    # `time()` is Unix epoch seconds (always UTC); unix2datetime converts it to a
+    # UTC DateTime without needing the separate TimeZones.jl package.
+    ts = Dates.format(Dates.unix2datetime(time()), "yyyy-mm-ddTHH:MM:SS") * "Z"
     println(JSON.json(Dict(
         "timestamp"      => ts,
         "correlation_id" => correlation_id,
