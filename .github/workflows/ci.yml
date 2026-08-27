@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build image
-        run: docker build -t julia-api ./docker
+        run: docker build -t julia-api -f docker/Dockerfile .
 
       - name: Smoke test — container starts and responds to /health
         run: |

@@ -5,7 +5,7 @@ A minimal Julia HTTP service that demonstrates how to expose small analytics-sty
 ## Quick Start
 
 ```bash
-docker build -t julia-api ./docker
+docker build -t julia-api -f docker/Dockerfile .
 docker run --rm -p 8080:8080 julia-api
 ```
 
