@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Julia
+        uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.10"
+
+      - name: Cache Julia packages
+        uses: julia-actions/cache@v2
+
+      - name: Instantiate project
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Run test suite
+        run: julia --project=. test/runtests.jl
+
+  docker-build:
+    name: Build container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t julia-api -f docker/Dockerfile .
+
+      - name: Smoke test — container starts and responds to /health
+        run: |
+          docker run -d -p 8080:8080 --name julia-api julia-api
+          status=1
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health; then status=0; break; fi
+            sleep 1
+          done
+          if [ "$status" -ne 0 ]; then
+            echo "Service did not become healthy in time"
+            echo "--- docker ps -a ---"
+            docker ps -a
+            echo "--- container state ---"
+            docker inspect --format='{{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' julia-api
+            echo "--- curl verbose ---"
+            curl -v http://localhost:8080/health || true
+          fi
+          echo "--- container logs ---"
+          docker logs julia-api
+          docker rm -f julia-api
+          exit $status

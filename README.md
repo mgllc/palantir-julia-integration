@@ -1,11 +1,11 @@
 # Palantir Julia Integration
 
-A minimal Julia HTTP service that demonstrates how to expose small analytics-style endpoints (`/add`, `/ai/echo`) for downstream systems, built around **GovDOSS principles** and an **OODA Loop** request-processing model.
+A minimal Julia HTTP service that demonstrates how to expose small analytics-style endpoints (`/add`, `/ai/echo`) for downstream systems, built around a defense-in-depth security posture and an **OODA Loop** request-processing model.
 
 ## Quick Start
 
 ```bash
-docker build -t julia-api ./docker
+docker build -t julia-api -f docker/Dockerfile .
 docker run --rm -p 8080:8080 julia-api
 ```
 
@@ -39,7 +39,7 @@ curl -X POST http://localhost:8080/add \
 ```text
 palantir-julia-integration/
 ├── src/
-│   └── api.jl                 # HTTP routes, OODA phases, GovDOSS controls
+│   └── api.jl                 # HTTP routes, OODA phases, security controls
 ├── docker/
 │   └── Dockerfile             # Container image; API_KEY injected at runtime
 ├── notebooks/
@@ -47,10 +47,10 @@ palantir-julia-integration/
 └── Project.toml               # Julia package dependencies
 ```
 
-## GovDOSS Principles Applied
+## Security Principles Applied
 
-GovDOSS (Government-grade Defense, Operations, Security, and Software) principles
-guide every design decision in this service.
+A defense-in-depth mindset guides every design decision in this service: treat
+every input as hostile, log everything, and fail closed.
 
 | Principle | Implementation |
 |-----------|---------------|
@@ -97,7 +97,7 @@ Selects the appropriate handler purely from method + path:
 ### ACT (handler functions + `handle_request`)
 Executes the chosen action:
 - Runs endpoint-specific validation and business logic.
-- Builds the response with GovDOSS security headers and the correlation ID.
+- Builds the response with hardened security headers and the correlation ID.
 - Emits an `ACT` audit log entry with the final HTTP status code.
 
 ## API Endpoints
