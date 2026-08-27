@@ -21,11 +21,14 @@ jobs:
 
       - name: Smoke test — container starts and responds to /health
         run: |
-          docker run -d --rm -p 8080:8080 --name julia-api julia-api
+          docker run -d -p 8080:8080 --name julia-api julia-api
+          status=1
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:8080/health; then exit 0; fi
+            if curl -sf http://localhost:8080/health; then status=0; break; fi
             sleep 1
           done
-          echo "Service did not become healthy in time"
+          if [ "$status" -ne 0 ]; then echo "Service did not become healthy in time"; fi
+          echo "--- container logs ---"
           docker logs julia-api
-          exit 1
+          docker rm -f julia-api
+          exit $status
