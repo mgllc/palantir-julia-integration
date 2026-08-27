@@ -5,10 +5,12 @@ WORKDIR /app
 # Copy project manifest and resolve dependencies before copying source so that
 # the package layer is cached independently of source changes.
 COPY Project.toml .
-RUN julia --project=. -e 'using Pkg; Pkg.instantiate()'
+RUN julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 
-# Copy source after dependencies are resolved.
+# Copy source after dependencies are resolved, then precompile the app's own
+# using-statements too so first request latency isn't dominated by JIT/precompile.
 COPY src/ ./src/
+RUN julia --project=. -e 'using HTTP, JSON, Dates, UUIDs'
 
 # API_KEY can be injected at runtime; leave unset for unauthenticated (dev) mode.
 # Example: docker run -e API_KEY=mysecret ...
