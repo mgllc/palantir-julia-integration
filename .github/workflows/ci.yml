@@ -23,11 +23,19 @@ jobs:
         run: |
           docker run -d -p 8080:8080 --name julia-api julia-api
           status=1
-          for i in $(seq 1 90); do
+          for i in $(seq 1 60); do
             if curl -sf http://localhost:8080/health; then status=0; break; fi
             sleep 1
           done
-          if [ "$status" -ne 0 ]; then echo "Service did not become healthy in time"; fi
+          if [ "$status" -ne 0 ]; then
+            echo "Service did not become healthy in time"
+            echo "--- docker ps -a ---"
+            docker ps -a
+            echo "--- container state ---"
+            docker inspect --format='{{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' julia-api
+            echo "--- curl verbose ---"
+            curl -v http://localhost:8080/health || true
+          fi
           echo "--- container logs ---"
           docker logs julia-api
           docker rm -f julia-api
