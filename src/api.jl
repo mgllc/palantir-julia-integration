@@ -1,5 +1,4 @@
 using HTTP
-using Sockets
 using JSON
 using Dates
 using UUIDs
@@ -299,4 +298,4 @@ function handle_request(req)
     return response
 end
 
-HTTP.serve(handle_request, Sockets.localhost, 8080)
+HTTP.serve(handle_request, "0.0.0.0", 8080)
