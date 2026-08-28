@@ -57,6 +57,7 @@ end
 @testset "decide_handler routing" begin
     @test decide_handler("GET",    "/health")  == :health
     @test decide_handler("GET",    "/metrics") == :metrics
+    @test decide_handler("GET",    "/metrics/prometheus") == :prometheus
     @test decide_handler("POST",   "/add")     == :add
     @test decide_handler("POST",   "/ai/echo") == :ai_echo
     @test decide_handler("GET",    "/missing") == :not_found
@@ -139,12 +140,13 @@ end
 end
 
 # ──────────────────────────────────────────────────────────────────────────────
-@testset "handle_ai_echo — happy path" begin
+@testset "handle_ai_echo — happy path (stub, no AI_BASE_URL)" begin
     req  = make_post("/ai/echo", Dict("prompt" => "hello"))
     resp = handle_ai_echo(req, "cid-echo")
     @test resp.status == 200
     body = JSON.parse(String(resp.body))
     @test body["response"] == "Echo: hello"
+    @test body["source"] == "stub"
     @test haskey(body, "note")
 end
 
@@ -165,6 +167,37 @@ end
     req  = HTTP.Request("POST", "/ai/echo", headers, Vector{UInt8}(JSON.json(Dict("prompt" => "hi"))))
     resp = handle_ai_echo(req, "cid-echo-ct")
     @test resp.status == 415
+end
+
+# ──────────────────────────────────────────────────────────────────────────────
+@testset "call_ai_model" begin
+    @test call_ai_model("hello") === nothing   # AI_BASE_URL unset by default
+
+    old_url = AI_BASE_URL[]
+    try
+        # Unreachable endpoint: the HTTP failure must be caught and degrade to
+        # `nothing` (falls back to the echo stub) rather than propagating.
+        AI_BASE_URL[] = "http://127.0.0.1:1"
+        @test call_ai_model("hello") === nothing
+    finally
+        AI_BASE_URL[] = old_url
+    end
+end
+
+# ──────────────────────────────────────────────────────────────────────────────
+@testset "handle_prometheus" begin
+    resp = handle_prometheus("cid-prom")
+    @test resp.status == 200
+    @test HTTP.header(resp, "Content-Type") == "text/plain; version=0.0.4; charset=utf-8"
+    body = String(resp.body)
+    @test occursin("julia_api_uptime_seconds", body)
+    @test occursin("julia_api_requests_total", body)
+
+    record_response!(200, "/health")
+    resp2 = handle_prometheus("cid-prom-2")
+    body2 = String(resp2.body)
+    @test occursin("julia_api_requests_total{status=\"200\"}", body2)
+    @test occursin("julia_api_endpoint_requests_total{endpoint=\"/health\",status=\"200\"}", body2)
 end
 
 # ──────────────────────────────────────────────────────────────────────────────

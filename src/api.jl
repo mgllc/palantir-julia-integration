@@ -7,18 +7,47 @@ using UUIDs
 # All tuneable limits and secrets are read from environment variables so that
 # nothing sensitive is baked into source code (principle: no hard-coded secrets).
 
-const MAX_BODY_BYTES    = 1_024 * 10   # 10 KB payload cap
-const RATE_LIMIT_COUNT  = 60           # max requests per window per client IP
-const RATE_LIMIT_WINDOW = 60           # sliding window length in seconds
+const HOST              = get(ENV, "API_HOST", "0.0.0.0")
+const PORT              = parse(Int, get(ENV, "API_PORT", "8080"))
+const MAX_BODY_BYTES    = parse(Int, get(ENV, "MAX_BODY_BYTES", string(1_024 * 10)))     # 10 KB default
+const RATE_LIMIT_COUNT  = parse(Int, get(ENV, "RATE_LIMIT_MAX_REQ", "60"))               # per window per client IP
+const RATE_LIMIT_WINDOW = parse(Int, get(ENV, "RATE_LIMIT_WINDOW", "60"))                # seconds
 # When API_KEY is set, every request must carry a matching X-API-Key header.
 # Leave unset (or empty) to run without authentication (development only).
 # Stored in a Ref so that tests can override the value without restarting.
 const REQUIRED_API_KEY  = Ref{String}(get(ENV, "API_KEY", ""))
 
+# AI model integration — leave AI_BASE_URL empty to use the built-in echo stub.
+# Points at any OpenAI-compatible chat-completions endpoint (OpenAI, Azure OpenAI,
+# Ollama, LM Studio, etc). Refs so tests can override without a process restart.
+const AI_BASE_URL = Ref{String}(get(ENV, "AI_BASE_URL", ""))
+const AI_API_KEY  = Ref{String}(get(ENV, "AI_API_KEY", ""))
+const AI_MODEL    = Ref{String}(get(ENV, "AI_MODEL", "gpt-3.5-turbo"))
+const AI_TIMEOUT  = Ref{Int}(parse(Int, get(ENV, "AI_TIMEOUT_S", "30")))
+
 # ─── In-memory rate-limit store ───────────────────────────────────────────────
 # Maps client IP → sorted list of request timestamps within the current window.
 const _rate_store = Dict{String, Vector{Float64}}()
 const _rate_lock  = ReentrantLock()
+
+# ─── In-process metrics ────────────────────────────────────────────────────────
+# Exposed via GET /metrics/prometheus (principle: operational visibility).
+const _metrics_lock    = ReentrantLock()
+const _status_counts   = Dict{Int,Int}()
+const _endpoint_counts = Dict{String, Dict{Int,Int}}()   # path → status → count
+const _total_requests  = Ref(0)
+const _start_time      = time()
+
+function record_response!(status::Integer, path::AbstractString)
+    lock(_metrics_lock) do
+        _status_counts[status] = get(_status_counts, status, 0) + 1
+        _total_requests[]     += 1
+        if !isempty(path)
+            ep         = get!(_endpoint_counts, path, Dict{Int,Int}())
+            ep[status] = get(ep, status, 0) + 1
+        end
+    end
+end
 
 # ─── Structured audit logger ──────────────────────────────────────────────────
 # Emits one JSON line per event so that log aggregators (Splunk, Elasticsearch,
@@ -33,13 +62,15 @@ const _rate_lock  = ReentrantLock()
 #   status         – HTTP status code; 0 while the response has not yet been sent.
 #   client_ip      – Caller IP extracted from X-Forwarded-For, or "unknown".
 #   detail         – Human-readable event description for the log record.
+#   elapsed_ms     – Total request handling time; only set on the ACT phase.
 function audit_log(; correlation_id::AbstractString, phase::AbstractString,
                      method::AbstractString="", path::AbstractString="", status::Integer=0,
-                     client_ip::AbstractString="", detail::AbstractString="")
+                     client_ip::AbstractString="", detail::AbstractString="",
+                     elapsed_ms::Union{Real,Nothing}=nothing)
     # `time()` is Unix epoch seconds (always UTC); unix2datetime converts it to a
     # UTC DateTime without needing the separate TimeZones.jl package.
     ts = Dates.format(Dates.unix2datetime(time()), "yyyy-mm-ddTHH:MM:SS") * "Z"
-    println(JSON.json(Dict(
+    entry = Dict{String,Any}(
         "timestamp"      => ts,
         "correlation_id" => correlation_id,
         "phase"          => phase,
@@ -48,7 +79,9 @@ function audit_log(; correlation_id::AbstractString, phase::AbstractString,
         "status"         => status,
         "client_ip"      => client_ip,
         "detail"         => detail,
-    )))
+    )
+    elapsed_ms === nothing || (entry["elapsed_ms"] = round(elapsed_ms, digits=2))
+    println(JSON.json(entry))
     # stdout is fully buffered (not line-buffered) once redirected to a pipe,
     # as it always is under Docker — without this, audit entries can sit
     # unflushed indefinitely on a low-traffic server.
@@ -101,6 +134,39 @@ function parse_json_body(req; correlation_id::AbstractString="")
     end
 
     return (body, nothing)
+end
+
+# ─── AI model integration (OpenAI-compatible chat completions API) ────────────
+# Returns the model's reply string, or `nothing` when unconfigured or the call
+# fails. Callers fall back to the echo stub on `nothing` — an AI provider outage
+# degrades the endpoint rather than crashing it (principle: security by default).
+function call_ai_model(prompt::AbstractString)::Union{String,Nothing}
+    isempty(AI_BASE_URL[]) && return nothing
+
+    request_body = JSON.json(Dict(
+        "model"      => AI_MODEL[],
+        "messages"   => [Dict("role" => "user", "content" => prompt)],
+        "max_tokens" => 512,
+    ))
+
+    headers = ["Content-Type" => "application/json"]
+    isempty(AI_API_KEY[]) || push!(headers, "Authorization" => "Bearer $(AI_API_KEY[])")
+
+    try
+        resp = HTTP.post(
+            "$(AI_BASE_URL[])/v1/chat/completions",
+            headers,
+            request_body;
+            readtimeout = AI_TIMEOUT[],
+        )
+        data = JSON.parse(String(resp.body))
+        return data["choices"][1]["message"]["content"]
+    catch err
+        Base.showerror(stderr, err, catch_backtrace())
+        println(stderr)
+        flush(stderr)
+        return nothing
+    end
 end
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -188,12 +254,14 @@ end
 # logic lives here, keeping handlers free of routing concerns.
 #
 # Returns a Symbol identifying the handler:
-#   :health, :metrics, :add, :ai_echo, :not_found, or :method_not_allowed.
+#   :health, :metrics, :prometheus, :add, :ai_echo, :not_found, or :method_not_allowed.
 function decide_handler(method::AbstractString, path::AbstractString)
     if method == "GET" && path == "/health"
         return :health
     elseif method == "GET" && path == "/metrics"
         return :metrics
+    elseif method == "GET" && path == "/metrics/prometheus"
+        return :prometheus
     elseif method == "POST" && path == "/add"
         return :add
     elseif method == "POST" && path == "/ai/echo"
@@ -227,6 +295,41 @@ function handle_metrics(correlation_id::AbstractString)
     ); correlation_id=correlation_id)
 end
 
+# Prometheus exposition format (v0.0.4) — drop-in compatible with a standard
+# `prometheus.yml` scrape config and Grafana.
+function handle_prometheus(correlation_id::AbstractString)
+    total, counts, ep_counts = lock(_metrics_lock) do
+        (_total_requests[], copy(_status_counts), Dict(k => copy(v) for (k, v) in _endpoint_counts))
+    end
+    uptime_s = round(Int, time() - _start_time)
+
+    lines = [
+        "# HELP julia_api_uptime_seconds API server uptime in seconds",
+        "# TYPE julia_api_uptime_seconds gauge",
+        "julia_api_uptime_seconds $uptime_s",
+        "",
+        "# HELP julia_api_requests_total Total HTTP requests by status code",
+        "# TYPE julia_api_requests_total counter",
+    ]
+    for (status, count) in sort(collect(counts))
+        push!(lines, "julia_api_requests_total{status=\"$status\"} $count")
+    end
+
+    push!(lines, "")
+    push!(lines, "# HELP julia_api_endpoint_requests_total HTTP requests by endpoint and status code")
+    push!(lines, "# TYPE julia_api_endpoint_requests_total counter")
+    for (endpoint, ep_map) in sort(collect(ep_counts), by=first)
+        for (status, count) in sort(collect(ep_map))
+            push!(lines, "julia_api_endpoint_requests_total{endpoint=\"$endpoint\",status=\"$status\"} $count")
+        end
+    end
+    body = join(lines, "\n") * "\n"
+
+    headers = ["Content-Type" => "text/plain; version=0.0.4; charset=utf-8"]
+    isempty(correlation_id) || push!(headers, "X-Correlation-ID" => correlation_id)
+    return HTTP.Response(200, headers, body)
+end
+
 function handle_add(req, correlation_id::AbstractString)
     body, err = parse_json_body(req; correlation_id=correlation_id)
     if err !== nothing
@@ -258,8 +361,18 @@ function handle_ai_echo(req, correlation_id::AbstractString)
                              correlation_id=correlation_id)
     end
 
-    response = "Echo: " * body["prompt"]
-    payload = Dict("response" => response, "note" => "AI echo stub; replace with model integration.")
+    prompt   = body["prompt"]
+    ai_reply = call_ai_model(prompt)
+
+    payload = if ai_reply !== nothing
+        Dict("response" => ai_reply, "model" => AI_MODEL[], "source" => "ai")
+    else
+        Dict(
+            "response" => "Echo: $prompt",
+            "note"     => "AI echo stub; set AI_BASE_URL to enable model integration.",
+            "source"   => "stub",
+        )
+    end
     return json_response(200, payload; correlation_id=correlation_id)
 end
 
@@ -278,6 +391,8 @@ function handle_request(req)
 end
 
 function handle_request_inner(req)
+    t0 = time()
+
     # Phase 1 — Observe
     correlation_id, client_ip, method, path = observe_request(req)
 
@@ -295,6 +410,8 @@ function handle_request_inner(req)
         handle_health(correlation_id)
     elseif handler == :metrics
         handle_metrics(correlation_id)
+    elseif handler == :prometheus
+        handle_prometheus(correlation_id)
     elseif handler == :add
         handle_add(req, correlation_id)
     elseif handler == :ai_echo
@@ -305,6 +422,8 @@ function handle_request_inner(req)
         json_response(405, Dict("error" => "Method not allowed"); correlation_id=correlation_id)
     end
 
+    record_response!(Int(response.status), path)
+
     audit_log(
         correlation_id = correlation_id,
         phase          = "ACT",
@@ -313,14 +432,24 @@ function handle_request_inner(req)
         status         = response.status,
         client_ip      = client_ip,
         detail         = "response dispatched",
+        elapsed_ms     = (time() - t0) * 1000,
     )
 
     return response
 end
 
 # Guarded so that `include`-ing this file (e.g. from the test suite) doesn't
-# also bind port 8080 — only running it directly (`julia src/api.jl`) starts
-# the server.
+# also bind a port — only running it directly (`julia src/api.jl`) starts the
+# server. `HTTP.serve!` returns immediately with a handle, so a SIGINT (e.g.
+# `docker stop`, Ctrl-C) can be caught and the listener closed cleanly instead
+# of the container being killed mid-request.
 if abspath(PROGRAM_FILE) == @__FILE__
-    HTTP.serve(handle_request, "0.0.0.0", 8080)
+    server = HTTP.serve!(handle_request, HOST, PORT)
+    try
+        wait(server)
+    catch err
+        err isa InterruptException || rethrow()
+    finally
+        isopen(server) && close(server)
+    end
 end
