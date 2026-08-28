@@ -9,6 +9,12 @@ docker build -t julia-api -f docker/Dockerfile .
 docker run --rm -p 8080:8080 julia-api
 ```
 
+Or via Compose, which also wires up a Docker-native health check and auto-restart:
+
+```bash
+docker compose up --build
+```
+
 With authentication enabled:
 
 ```bash
@@ -20,6 +26,7 @@ Then test the endpoints:
 ```bash
 curl http://localhost:8080/health
 curl http://localhost:8080/metrics
+curl http://localhost:8080/metrics/prometheus
 curl -X POST http://localhost:8080/add \
      -H "Content-Type: application/json" \
      -d '{"x":2,"y":3}'
@@ -34,6 +41,24 @@ curl -X POST http://localhost:8080/add \
      -d '{"x":2,"y":3}'
 ```
 
+## Configuration
+
+Every tuneable value is read from an environment variable at startup — nothing
+requires a code change or rebuild:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `API_HOST` | `0.0.0.0` | Bind address |
+| `API_PORT` | `8080` | Bind port |
+| `API_KEY` | *(unset)* | When set, requires a matching `X-API-Key` header on every request |
+| `MAX_BODY_BYTES` | `10240` | Request body size cap |
+| `RATE_LIMIT_WINDOW` | `60` | Rate-limit sliding window, seconds |
+| `RATE_LIMIT_MAX_REQ` | `60` | Max requests per client IP per window |
+| `AI_BASE_URL` | *(unset)* | OpenAI-compatible chat-completions base URL; unset = echo stub |
+| `AI_API_KEY` | *(unset)* | Bearer token for the AI provider, if it requires one |
+| `AI_MODEL` | `gpt-3.5-turbo` | Model name sent to the AI provider |
+| `AI_TIMEOUT_S` | `30` | AI provider request timeout, seconds |
+
 ## Repository Structure
 
 ```text
@@ -41,7 +66,10 @@ palantir-julia-integration/
 ├── src/
 │   └── api.jl                 # HTTP routes, OODA phases, security controls
 ├── docker/
-│   └── Dockerfile             # Container image; API_KEY injected at runtime
+│   └── Dockerfile             # Container image; env-var config, HEALTHCHECK
+├── docker-compose.yml         # One-command local run with health check + auto-restart
+├── test/
+│   └── runtests.jl            # Unit tests — handlers, routing, auth, full pipeline
 ├── notebooks/
 │   └── example_bridge.ipynb   # Python request examples including auth and metrics
 └── Project.toml               # Julia package dependencies
@@ -89,6 +117,7 @@ Analyses and contextualises the request:
 Selects the appropriate handler purely from method + path:
 - `GET /health` → `:health`
 - `GET /metrics` → `:metrics`
+- `GET /metrics/prometheus` → `:prometheus`
 - `POST /add` → `:add`
 - `POST /ai/echo` → `:ai_echo`
 - Other `GET`/`POST` → `:not_found` (404)
@@ -120,6 +149,24 @@ Returns live rate-limit telemetry.
 }
 ```
 
+### `GET /metrics/prometheus`
+Prometheus exposition format (v0.0.4) — point a standard `prometheus.yml` scrape
+config or Grafana at this endpoint.
+
+```
+# HELP julia_api_uptime_seconds API server uptime in seconds
+# TYPE julia_api_uptime_seconds gauge
+julia_api_uptime_seconds 42
+
+# HELP julia_api_requests_total Total HTTP requests by status code
+# TYPE julia_api_requests_total counter
+julia_api_requests_total{status="200"} 17
+
+# HELP julia_api_endpoint_requests_total HTTP requests by endpoint and status code
+# TYPE julia_api_endpoint_requests_total counter
+julia_api_endpoint_requests_total{endpoint="/health",status="200"} 12
+```
+
 ### `POST /add`
 Request:
 
@@ -140,10 +187,15 @@ Request:
 {"prompt": "Hello"}
 ```
 
-Response:
+Response — `"source"` tells you whether a real model answered or the request
+fell back to the stub (unset `AI_BASE_URL`, or the AI provider errored/timed out):
 
 ```json
-{"response": "Echo: Hello", "note": "AI echo stub; replace with model integration."}
+{"response": "Echo: Hello", "note": "AI echo stub; set AI_BASE_URL to enable model integration.", "source": "stub"}
+```
+
+```json
+{"response": "Hello! How can I help?", "model": "gpt-3.5-turbo", "source": "ai"}
 ```
 
 ## Error Behavior
@@ -167,21 +219,21 @@ Each log line is a single JSON object written to stdout:
 {
   "timestamp":      "2024-01-15T12:34:56Z",
   "correlation_id": "550e8400-e29b-41d4-a716-446655440000",
-  "phase":          "OBSERVE",
+  "phase":          "ACT",
   "method":         "POST",
   "path":           "/add",
-  "status":         0,
+  "status":         200,
   "client_ip":      "10.0.0.1",
-  "detail":         "request received"
+  "detail":         "response dispatched",
+  "elapsed_ms":     1.23
 }
 ```
 
-The `correlation_id` links the `OBSERVE`, `ORIENT`, and `ACT` entries for each request.
+The `correlation_id` links the `OBSERVE`, `ORIENT`, and `ACT` entries for each
+request; `elapsed_ms` (total handling time) is only present on the `ACT` entry.
 
 ## What to Learn Next
 
-1. **HTTP.jl basics**: routing strategies and middleware patterns.
-2. **Input validation patterns**: expand current checks into reusable schema-style validation.
-3. **Service hardening**: persistent metrics store, distributed rate limiting (Redis), mTLS.
-4. **Foundry integration path**: call this API from Python-based orchestration or containerized jobs.
-5. **Testing**: add endpoint tests for happy-path and error-path behavior using `HTTP.jl` test client.
+1. **Service hardening**: persistent metrics store, distributed rate limiting (Redis), mTLS.
+2. **Foundry integration path**: call this API from Python-based orchestration or containerized jobs.
+3. **AI integration test coverage**: a mocked HTTP.jl server standing in for the AI provider, to test the success path (not just the fallback path currently covered).

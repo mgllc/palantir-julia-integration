@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  julia-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      # Both sides use API_PORT so host and container always stay in sync.
+      # Set API_PORT in your shell (e.g. export API_PORT=9000) to change both at once.
+      - "${API_PORT:-8080}:${API_PORT:-8080}"
+    environment:
+      API_HOST: "0.0.0.0"
+      API_PORT: "${API_PORT:-8080}"
+      MAX_BODY_BYTES: "${MAX_BODY_BYTES:-10240}"
+      RATE_LIMIT_WINDOW: "${RATE_LIMIT_WINDOW:-60}"
+      RATE_LIMIT_MAX_REQ: "${RATE_LIMIT_MAX_REQ:-60}"
+      # Authentication — leave empty to disable (default). Every request must
+      # then carry a matching X-API-Key header.
+      # Set to a strong random string in production: openssl rand -hex 32
+      API_KEY: "${API_KEY:-}"
+      # AI model integration — leave empty to use the built-in echo stub (default).
+      # Point at any OpenAI-compatible endpoint: OpenAI, Azure OpenAI, Ollama, LM Studio, etc.
+      AI_BASE_URL: "${AI_BASE_URL:-}"
+      AI_API_KEY: "${AI_API_KEY:-}"
+      AI_MODEL: "${AI_MODEL:-gpt-3.5-turbo}"
+      AI_TIMEOUT_S: "${AI_TIMEOUT_S:-30}"
+    # Docker restarts the container on any non-zero exit, including crashes.
+    restart: always
+    # Docker tracks liveness independently; used by Compose, Swarm, and external probes.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:${API_PORT:-8080}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
