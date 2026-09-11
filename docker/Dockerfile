@@ -1,4 +1,4 @@
-FROM julia:1.10
+FROM julia:1.13
 
 # Install curl for the HEALTHCHECK probe.
 RUN apt-get update \
