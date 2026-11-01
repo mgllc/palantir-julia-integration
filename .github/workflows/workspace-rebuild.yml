@@ -1,0 +1,64 @@
+name: Workspace rebuild
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '12 4 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: workspace-rebuild-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  rebuild:
+    name: Julia unit tests, clean container rebuild, localhost health smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9
+        with:
+          version: '1.10'
+      - name: Resolve project and run unit tests
+        run: |
+          julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+          julia --project=. test/runtests.jl
+      - name: Rebuild container from fresh layers
+        run: docker build --pull --no-cache -t workspace-julia-api -f docker/Dockerfile .
+      - name: Verify container health
+        run: |
+          trap 'docker logs workspace-julia-api; docker rm -f workspace-julia-api' EXIT
+          docker run -d -p 127.0.0.1:8080:8080 --name workspace-julia-api workspace-julia-api
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8080/health; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Record execution evidence
+        if: always()
+        env:
+          BUILD_STATUS: ${{ job.status }}
+          VALIDATION_SCOPE: 'Julia unit tests, clean container rebuild, localhost health smoke test'
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = dict(schema=1, repository=os.environ['GITHUB_REPOSITORY'],
+                        commit=os.environ['GITHUB_SHA'], run_id=os.environ['GITHUB_RUN_ID'],
+                        status=os.environ['BUILD_STATUS'], scope=os.environ['VALIDATION_SCOPE'])
+          Path('workspace-rebuild.json').write_text(json.dumps(report, indent=2) + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write('Workspace rebuild: ' + report['status'] + '\n\n' + report['scope'] + '\n')
+          PY
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        if: always()
+        with:
+          name: workspace-rebuild-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            workspace-rebuild.json
+          if-no-files-found: error
+          retention-days: 30
