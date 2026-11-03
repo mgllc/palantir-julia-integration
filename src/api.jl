@@ -22,8 +22,10 @@ const REQUIRED_API_KEY  = Ref{String}(get(ENV, "API_KEY", ""))
 # Ollama, LM Studio, etc). Refs so tests can override without a process restart.
 const AI_BASE_URL = Ref{String}(get(ENV, "AI_BASE_URL", ""))
 const AI_API_KEY  = Ref{String}(get(ENV, "AI_API_KEY", ""))
-const AI_MODEL    = Ref{String}(get(ENV, "AI_MODEL", "gpt-3.5-turbo"))
+const AI_MODEL    = Ref{String}(get(ENV, "AI_MODEL", ""))
 const AI_TIMEOUT  = Ref{Int}(parse(Int, get(ENV, "AI_TIMEOUT_S", "30")))
+include(joinpath(@__DIR__, "model_routing.jl"))
+const AI_ROUTING = Ref(load_ai_routing_policy())
 
 # ─── In-memory rate-limit store ───────────────────────────────────────────────
 # Maps client IP → sorted list of request timestamps within the current window.
@@ -140,27 +142,45 @@ end
 # Returns the model's reply string, or `nothing` when unconfigured or the call
 # fails. Callers fall back to the echo stub on `nothing` — an AI provider outage
 # degrades the endpoint rather than crashing it (principle: security by default).
-function call_ai_model(prompt::AbstractString)::Union{String,Nothing}
-    isempty(AI_BASE_URL[]) && return nothing
+function call_ai_model(prompt::AbstractString; task_type::AbstractString="",
+                       trusted::Bool=false)::Union{String,Nothing}
+    policy = AI_ROUTING[]
+    selection = select_ai_model(policy; task_type=task_type, trusted=trusted,
+                                model_override=AI_MODEL[])
+    return call_selected_ai_model(prompt, selection.model, policy)
+end
 
-    request_body = JSON.json(Dict(
-        "model"      => AI_MODEL[],
+function call_selected_ai_model(prompt::AbstractString, model::AbstractString,
+                                policy::AIRoutingPolicy)::Union{String,Nothing}
+    isempty(AI_BASE_URL[]) && return nothing
+    isempty(model) && return nothing
+    ncodeunits(prompt) <= policy.max_prompt_bytes || return nothing
+
+    request_payload = Dict{String,Any}(
+        "model"      => model,
         "messages"   => [Dict("role" => "user", "content" => prompt)],
-        "max_tokens" => 512,
-    ))
+        policy.output_token_parameter => policy.max_output_tokens,
+    )
+    # Optional because OpenAI-compatible providers may not accept this field.
+    isempty(policy.service_tier) || (request_payload["service_tier"] = policy.service_tier)
+    request_body = JSON.json(request_payload)
 
     headers = ["Content-Type" => "application/json"]
     isempty(AI_API_KEY[]) || push!(headers, "Authorization" => "Bearer $(AI_API_KEY[])")
 
     try
         resp = HTTP.post(
-            "$(AI_BASE_URL[])/v1/chat/completions",
+            "$(rstrip(AI_BASE_URL[], '/'))/v1/chat/completions",
             headers,
             request_body;
             readtimeout = AI_TIMEOUT[],
+            retry = false,
+            redirect = false,
         )
+        200 <= resp.status < 300 || return nothing
         data = JSON.parse(String(resp.body))
-        return data["choices"][1]["message"]["content"]
+        reply = data["choices"][1]["message"]["content"]
+        return reply isa AbstractString ? String(reply) : nothing
     catch err
         Base.showerror(stderr, err, catch_backtrace())
         println(stderr)
@@ -361,11 +381,27 @@ function handle_ai_echo(req, correlation_id::AbstractString)
                              correlation_id=correlation_id)
     end
 
-    prompt   = body["prompt"]
-    ai_reply = call_ai_model(prompt)
+    prompt = body["prompt"]
+    policy = AI_ROUTING[]
+    if ncodeunits(prompt) > policy.max_prompt_bytes
+        return json_response(413, Dict("error" => "Prompt exceeds AI_MAX_PROMPT_BYTES");
+                             correlation_id=correlation_id)
+    end
+    # Authentication is required even if this handler is called directly.
+    trusted = policy.trust_task_metadata && !isempty(REQUIRED_API_KEY[]) &&
+              HTTP.header(req, "X-API-Key", "") == REQUIRED_API_KEY[]
+    task_type = get(body, "task_type", "")
+    if !(task_type isa AbstractString) || ncodeunits(task_type) > 64
+        return json_response(422, Dict("error" => "task_type must be a string of at most 64 bytes");
+                             correlation_id=correlation_id)
+    end
+    selection = select_ai_model(policy; task_type=task_type, trusted=trusted,
+                                model_override=AI_MODEL[])
+    ai_reply = call_selected_ai_model(prompt, selection.model, policy)
 
     payload = if ai_reply !== nothing
-        Dict("response" => ai_reply, "model" => AI_MODEL[], "source" => "ai")
+        Dict("response" => ai_reply, "model" => selection.model, "source" => "ai",
+             "routing_reason" => selection.reason)
     else
         Dict(
             "response" => "Echo: $prompt",
