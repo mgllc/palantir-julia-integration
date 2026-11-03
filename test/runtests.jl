@@ -7,7 +7,8 @@ using JSON
 withenv("AI_BASE_URL" => "", "AI_API_KEY" => "", "AI_MODEL" => "",
         "AI_DEFAULT_MODEL" => "", "AI_TASK_MODELS" => "{}", "AI_ALLOWED_MODELS" => "",
         "AI_TRUST_TASK_METADATA" => "false", "AI_MAX_PROMPT_BYTES" => "10240",
-        "AI_MAX_OUTPUT_TOKENS" => "512", "AI_OUTPUT_TOKEN_PARAMETER" => "max_tokens") do
+        "AI_MAX_OUTPUT_TOKENS" => "512", "AI_OUTPUT_TOKEN_PARAMETER" => "max_tokens",
+        "AI_SERVICE_TIER" => "") do
     include(joinpath(@__DIR__, "..", "src", "api.jl"))
 end
 

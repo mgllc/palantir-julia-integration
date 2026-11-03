@@ -8,6 +8,7 @@ struct AIRoutingPolicy
     max_prompt_bytes::Int
     max_output_tokens::Int
     output_token_parameter::String
+    service_tier::String
 end
 
 function load_ai_routing_policy(env::AbstractDict=ENV)
@@ -41,8 +42,11 @@ function load_ai_routing_policy(env::AbstractDict=ENV)
     parameter = get(env, "AI_OUTPUT_TOKEN_PARAMETER", "max_tokens")
     parameter in ("max_tokens", "max_completion_tokens") ||
         throw(ArgumentError("AI_OUTPUT_TOKEN_PARAMETER must be max_tokens or max_completion_tokens"))
+    service_tier = get(env, "AI_SERVICE_TIER", "")
+    service_tier in ("", "default") ||
+        throw(ArgumentError("AI_SERVICE_TIER must be empty or default"))
     return AIRoutingPolicy(default_model, routes, allowed, trust == "true",
-                           input_limit, output_limit, parameter)
+                           input_limit, output_limit, parameter, service_tier)
 end
 
 # A nonempty AI_MODEL is the existing deployment-level override. The HTTP body

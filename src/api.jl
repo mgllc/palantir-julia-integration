@@ -156,11 +156,14 @@ function call_selected_ai_model(prompt::AbstractString, model::AbstractString,
     isempty(model) && return nothing
     ncodeunits(prompt) <= policy.max_prompt_bytes || return nothing
 
-    request_body = JSON.json(Dict(
+    request_payload = Dict{String,Any}(
         "model"      => model,
         "messages"   => [Dict("role" => "user", "content" => prompt)],
         policy.output_token_parameter => policy.max_output_tokens,
-    ))
+    )
+    # Optional because OpenAI-compatible providers may not accept this field.
+    isempty(policy.service_tier) || (request_payload["service_tier"] = policy.service_tier)
+    request_body = JSON.json(request_payload)
 
     headers = ["Content-Type" => "application/json"]
     isempty(AI_API_KEY[]) || push!(headers, "Authorization" => "Bearer $(AI_API_KEY[])")

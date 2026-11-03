@@ -32,6 +32,8 @@ end
         (AI_MAX_OUTPUT_TOKENS="0",),
         (AI_MAX_OUTPUT_TOKENS="4097",),
         (AI_OUTPUT_TOKEN_PARAMETER="model",),
+        (AI_SERVICE_TIER="priority",),
+        (AI_SERVICE_TIER="auto",),
     )
         @test_throws ArgumentError load_ai_routing_policy(test_routing_env(; overrides...))
     end
@@ -90,6 +92,7 @@ end
             @test sent.method == "POST"
             @test sent.authorization == "Bearer local-test-token"
             @test sent.body["max_tokens"] == 512
+            @test !haskey(sent.body, "service_tier")
             @test sent.body["messages"] == [Dict("role" => "user", "content" => "hello")]
         end
 
@@ -113,6 +116,13 @@ end
         resp = ask(Dict("prompt" => "hello", "task_type" => "code"))
         @test last(requests).body["model"] == "test-fixed"
         @test JSON.parse(String(resp.body))["routing_reason"] == "explicit_override"
+        AI_MODEL[] = ""
+        AI_ROUTING[] = load_ai_routing_policy(test_routing_env(AI_SERVICE_TIER="default"))
+        ask(Dict("prompt" => "hello", "task_type" => "code", "service_tier" => "priority"))
+        @test last(requests).body["service_tier"] == "default"
+        AI_MODEL[] = "test-fixed"
+        ask(Dict("prompt" => "hello"))
+        @test last(requests).body["service_tier"] == "default"
         AI_MODEL[] = ""
         AI_ROUTING[] = load_ai_routing_policy(test_routing_env(
             AI_OUTPUT_TOKEN_PARAMETER="max_completion_tokens", AI_MAX_OUTPUT_TOKENS="128",

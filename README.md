@@ -65,6 +65,7 @@ requires a code change or rebuild:
 | `AI_MAX_PROMPT_BYTES` | `10240` | UTF-8 prompt byte cap, 1–1048576; HTTP body cap also applies |
 | `AI_MAX_OUTPUT_TOKENS` | `512` | Output token cap, 1–4096, sent on every provider request |
 | `AI_OUTPUT_TOKEN_PARAMETER` | `max_tokens` | Provider-supported cap field: `max_tokens` or `max_completion_tokens` |
+| `AI_SERVICE_TIER` | *(unset)* | Optional `default` requests standard processing on providers supporting OpenAI's `service_tier`; unset omits the field |
 
 ### Automatic task-based model selection
 
@@ -113,6 +114,15 @@ documents `max_completion_tokens` as the current cap, including reasoning
 tokens; legacy `max_tokens` remains the compatibility default here. Byte/token
 caps bound request size and requested output, not dollar cost. Costs and model
 availability remain unknown until verified for your account and deployment.
+
+For OpenAI, set `AI_SERVICE_TIER=default` to request standard pricing and
+performance for the selected model. Unset preserves compatibility by omitting
+the field; OpenAI then uses its `auto` behavior and project configuration, which
+can select a premium tier. Other providers may reject `service_tier`, so only
+enable it after verifying support. The only accepted nonempty value is
+`default`; HTTP request bodies cannot override it. This setting applies equally
+to automatic routes and fixed `AI_MODEL` overrides. It requests a processing
+tier, not a dollar spending limit or a guarantee about an arbitrary provider.
 
 Run `julia --project=. test/runtests.jl` to exercise policy validation and a
 loopback HTTP provider that captures actual model IDs, token caps, and request
