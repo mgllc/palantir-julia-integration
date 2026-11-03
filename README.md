@@ -56,8 +56,69 @@ requires a code change or rebuild:
 | `RATE_LIMIT_MAX_REQ` | `60` | Max requests per client IP per window |
 | `AI_BASE_URL` | *(unset)* | OpenAI-compatible chat-completions base URL; unset = echo stub |
 | `AI_API_KEY` | *(unset)* | Bearer token for the AI provider, if it requires one |
-| `AI_MODEL` | `gpt-3.5-turbo` | Model name sent to the AI provider |
+| `AI_MODEL` | *(unset)* | Explicit fixed model override; takes precedence over automatic routing |
 | `AI_TIMEOUT_S` | `30` | AI provider request timeout, seconds |
+| `AI_DEFAULT_MODEL` | *(unset)* | Conservative model for missing, unknown, or untrusted task metadata |
+| `AI_ALLOWED_MODELS` | `AI_DEFAULT_MODEL` | Comma-separated model IDs allowed for automatic routing |
+| `AI_TASK_MODELS` | `{}` | JSON object mapping task identifiers to allowed model IDs |
+| `AI_TRUST_TASK_METADATA` | `false` | Honor `task_type` only when true and the caller supplies the configured `API_KEY` |
+| `AI_MAX_PROMPT_BYTES` | `10240` | UTF-8 prompt byte cap, 1–1048576; HTTP body cap also applies |
+| `AI_MAX_OUTPUT_TOKENS` | `512` | Output token cap, 1–4096, sent on every provider request |
+| `AI_OUTPUT_TOKEN_PARAMETER` | `max_tokens` | Provider-supported cap field: `max_tokens` or `max_completion_tokens` |
+
+### Automatic task-based model selection
+
+Routing is applied to the actual outgoing chat-completions request. Configure
+model IDs available at your existing `AI_BASE_URL`; the service does not choose
+a provider, discover available models, infer prices, or rank model quality.
+The names below are placeholders to replace with deployment-approved IDs:
+
+```bash
+export AI_DEFAULT_MODEL='approved-balanced-model'
+export AI_ALLOWED_MODELS='approved-economy-model,approved-balanced-model'
+export AI_TASK_MODELS='{"extract":"approved-economy-model","classify":"approved-economy-model","summarize":"approved-economy-model","code":"approved-balanced-model","analyze":"approved-balanced-model","research":"approved-balanced-model"}'
+export AI_TRUST_TASK_METADATA=true
+# Set API_KEY and existing AI_BASE_URL / AI_API_KEY through your secret/config system.
+# Leave AI_MODEL unset to allow routing; a nonempty AI_MODEL pins all tasks.
+```
+
+An authenticated orchestrator can send `{"prompt":"...","task_type":"summarize"}`.
+It must derive `task_type` from trusted workflow metadata, not copy instructions
+from retrieved documents or prompt text. Enable metadata trust only for a
+service whose API key is held by trusted orchestration code. No-auth development
+mode and the default trust setting ignore task metadata for model selection.
+Missing and unknown task types use `AI_DEFAULT_MODEL`; malformed task metadata
+returns `422`. Prompt keywords and body fields such as `model` and `base_url`
+never change routing. Any `complex` route must be explicitly configured and
+authorized by that orchestrator; the service never escalates based on failure
+or content.
+
+The startup policy rejects routes outside the allowlist and routes without a
+default. `AI_MODEL` remains a separately approved deployment override and does
+not need an automatic-routing allowlist entry. The former implicit
+`gpt-3.5-turbo` default is removed: set `AI_MODEL` explicitly to preserve a fixed
+deployment, or configure `AI_DEFAULT_MODEL` for routing. With neither set, the
+endpoint returns its existing echo stub without contacting a provider.
+
+All routes share the same endpoint, credential, and deployment data boundary.
+The request is made once; redirects and retries are disabled, and provider
+errors retain the existing `source: "stub"` response instead of trying another
+model or provider. Successful responses report the selected `model` and
+`routing_reason` (`task_route`, `default`, or `explicit_override`). A stub is
+not a successful model answer; callers should check `source`.
+
+Choose a token-cap parameter supported by **every** routed model on the
+configured provider. [OpenAI's Chat Completions reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
+documents `max_completion_tokens` as the current cap, including reasoning
+tokens; legacy `max_tokens` remains the compatibility default here. Byte/token
+caps bound request size and requested output, not dollar cost. Costs and model
+availability remain unknown until verified for your account and deployment.
+
+Run `julia --project=. test/runtests.jl` to exercise policy validation and a
+loopback HTTP provider that captures actual model IDs, token caps, and request
+paths. Tests clear inherited provider settings and make no paid model calls.
+They do not validate live provider permissions, quality, pricing, or support
+for the selected models and token-cap field.
 
 ## Repository Structure
 
@@ -188,14 +249,14 @@ Request:
 ```
 
 Response — `"source"` tells you whether a real model answered or the request
-fell back to the stub (unset `AI_BASE_URL`, or the AI provider errored/timed out):
+fell back to the stub (unset `AI_BASE_URL`, no model configured, or the AI provider errored/timed out):
 
 ```json
 {"response": "Echo: Hello", "note": "AI echo stub; set AI_BASE_URL to enable model integration.", "source": "stub"}
 ```
 
 ```json
-{"response": "Hello! How can I help?", "model": "gpt-3.5-turbo", "source": "ai"}
+{"response": "Hello! How can I help?", "model": "approved-balanced-model", "source": "ai", "routing_reason": "default"}
 ```
 
 ## Error Behavior
@@ -206,7 +267,7 @@ fell back to the stub (unset `AI_BASE_URL`, or the AI provider errored/timed out
 | `401`  | Missing or incorrect `X-API-Key` (when `API_KEY` env var is set) |
 | `404`  | Unknown `GET` / `POST` route |
 | `405`  | Unsupported HTTP method |
-| `413`  | Payload exceeds 10 KB |
+| `413`  | Payload exceeds `MAX_BODY_BYTES` or prompt exceeds `AI_MAX_PROMPT_BYTES` |
 | `415`  | Non-JSON `Content-Type` |
 | `422`  | Structurally valid request with invalid or missing fields |
 | `429`  | Rate limit exceeded (60 requests per 60-second window per IP) |
@@ -236,4 +297,4 @@ request; `elapsed_ms` (total handling time) is only present on the `ACT` entry.
 
 1. **Service hardening**: persistent metrics store, distributed rate limiting (Redis), mTLS.
 2. **Foundry integration path**: call this API from Python-based orchestration or containerized jobs.
-3. **AI integration test coverage**: a mocked HTTP.jl server standing in for the AI provider, to test the success path (not just the fallback path currently covered).
+3. **Model evaluation**: measure task quality and actual usage against approved deployment models before changing routing configuration.

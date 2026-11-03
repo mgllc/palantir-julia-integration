@@ -3,7 +3,13 @@ using HTTP
 using JSON
 
 # Include the API source without starting the server (guarded by PROGRAM_FILE check).
-include(joinpath(@__DIR__, "..", "src", "api.jl"))
+# Tests must never inherit live provider settings or credentials.
+withenv("AI_BASE_URL" => "", "AI_API_KEY" => "", "AI_MODEL" => "",
+        "AI_DEFAULT_MODEL" => "", "AI_TASK_MODELS" => "{}", "AI_ALLOWED_MODELS" => "",
+        "AI_TRUST_TASK_METADATA" => "false", "AI_MAX_PROMPT_BYTES" => "10240",
+        "AI_MAX_OUTPUT_TOKENS" => "512", "AI_OUTPUT_TOKEN_PARAMETER" => "max_tokens") do
+    include(joinpath(@__DIR__, "..", "src", "api.jl"))
+end
 
 # Helper: build a minimal POST request with a JSON body.
 function make_post(path::String, body::Dict; content_type::String="application/json",
@@ -174,15 +180,20 @@ end
     @test call_ai_model("hello") === nothing   # AI_BASE_URL unset by default
 
     old_url = AI_BASE_URL[]
+    old_model = AI_MODEL[]
     try
         # Unreachable endpoint: the HTTP failure must be caught and degrade to
         # `nothing` (falls back to the echo stub) rather than propagating.
         AI_BASE_URL[] = "http://127.0.0.1:1"
+        AI_MODEL[] = "test-fixed"
         @test call_ai_model("hello") === nothing
     finally
         AI_BASE_URL[] = old_url
+        AI_MODEL[] = old_model
     end
 end
+
+include("model_routing.jl")
 
 # ──────────────────────────────────────────────────────────────────────────────
 @testset "handle_prometheus" begin
